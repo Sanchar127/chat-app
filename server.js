@@ -27,35 +27,36 @@ const users = {};
 io.on("connection", (socket) => {
   console.log(`🔵 New connection: ${socket.id}`);
 
+  // ✅ Set the user's socket ID
   socket.on("setUsername", (email) => {
     users[email] = socket.id;
     console.log(`✅ User ${email} connected with ID ${socket.id}`);
     io.emit("userList", Object.keys(users)); // Broadcast online users
   });
 
+  // ✅ Handle sending messages
   socket.on("sendMessage", async (message) => {
     try {
       console.log("📩 Received message:", message);
-  
+
       // Remove _id if it exists (MongoDB will generate one automatically)
       const { _id, ...messageData } = message;
-  
+
       // Save to database
       const savedMessage = await Message.create(messageData);
-  
+
       // Emit message to recipient if online
       if (users[message.recipient]) {
         console.log(`📤 Sending message to recipient ${message.recipient}`);
         io.to(users[message.recipient]).emit("receiveMessage", savedMessage);
       }
-  
+
       // Emit to sender
       io.to(users[message.sender]).emit("receiveMessage", savedMessage);
     } catch (error) {
       console.error("❌ Error saving message:", error);
     }
   });
-  
 
   // ✅ Handle disconnection
   socket.on("disconnect", () => {
@@ -87,25 +88,6 @@ app.get("/messages", async (req, res) => {
   }
 });
 
-// ✅ Store messages API
-app.post("/messages", async (req, res) => {
-  try {
-    const { sender, recipient, text, timestamp } = req.body;
-
-    if (!sender || !recipient || !text) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    const message = new Message({ sender, recipient, text, timestamp });
-    const savedMessage = await message.save();
-
-    res.status(201).json(savedMessage);
-  } catch (error) {
-    console.error("❌ Error saving message:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// Start server
+// ✅ Start server
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

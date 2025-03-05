@@ -1,13 +1,14 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { io } from "socket.io-client";
+import { io, Socket } from "socket.io-client";
 import { useUser } from "@clerk/nextjs";
 import { Send } from "lucide-react";
 
-const socket = io("http://localhost:4000");
+// ✅ Initialize socket only once
+const socket: Socket = io("http://localhost:4000", { autoConnect: false });
 
 interface Message {
-  _id: string;
+  _id?: string;
   sender: string;
   recipient: string;
   text: string;
@@ -26,37 +27,49 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
 
   const senderEmail = user?.primaryEmailAddress?.emailAddress;
 
-  // ✅ Connect user to WebSocket
+  // ✅ Ensure WebSocket connection is established once
+  useEffect(() => {
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    const handleReceiveMessage = (message: Message) => {
+      console.log("📥 New message received:", message);
+      setMessages((prev) => {
+        if (!prev.some((msg) => msg._id === message._id)) {
+          return [...prev, message];
+        }
+        return prev;
+      });
+    };
+
+    socket.on("receiveMessage", handleReceiveMessage);
+
+    return () => {
+      socket.off("receiveMessage", handleReceiveMessage); // Cleanup listener
+    };
+  }, []);
+
+  // ✅ Set the user's socket ID
   useEffect(() => {
     if (senderEmail) {
       socket.emit("setUsername", senderEmail);
     }
-
-    socket.on("receiveMessage", (message: Message) => {
-      console.log("📥 New message received:", message);
-
-      setMessages((prev) => {
-        const exists = prev.some((msg) => msg._id === message._id);
-        return exists ? prev : [...prev, message];
-      });
-    });
-
-    return () => {
-      socket.off("receiveMessage");
-    };
   }, [senderEmail]);
 
-  // ✅ Fetch chat history when a contact is selected
+  // ✅ Fetch chat history when contact changes
   useEffect(() => {
     if (selectedContact && senderEmail) {
-      fetch(`http://localhost:4000/messages?sender=${senderEmail}&recipient=${selectedContact.email}`)
+      fetch(
+        `http://localhost:4000/messages?sender=${senderEmail}&recipient=${selectedContact.email}`
+      )
         .then((res) => res.json())
         .then(setMessages)
         .catch((err) => console.error("❌ Fetch error:", err));
     }
   }, [selectedContact, senderEmail]);
 
-  // ✅ Scroll to latest message
+  // ✅ Scroll to the latest message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -64,7 +77,7 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
   const sendMessage = async () => {
     if (!inputMessage.trim() || !senderEmail || !selectedContact) return;
 
-    const message = {
+    const message: Message = {
       sender: senderEmail,
       recipient: selectedContact.email,
       text: inputMessage,
@@ -72,20 +85,9 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
     };
 
     try {
-      // ✅ Send to backend
-      const response = await fetch("http://localhost:4000/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(message),
-      });
-
-      if (!response.ok) throw new Error("❌ Failed to send message");
-
-      const savedMessage = await response.json();
-
-      // ✅ Emit message via WebSocket (Backend will handle appending)
-      socket.emit("sendMessage", savedMessage);
-      console.log("📤 Message sent:", savedMessage);
+      // ✅ Emit the message via WebSocket (this will trigger the backend to save it)
+      socket.emit("sendMessage", message);
+      console.log("📤 Message sent:", message);
 
       setInputMessage("");
     } catch (error) {
@@ -103,8 +105,17 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
 
           <div className="flex-1 overflow-y-auto p-4 bg-gray-900">
             {messages.map((msg) => (
-              <div key={msg._id} className={`flex ${msg.sender === senderEmail ? "justify-end" : "justify-start"} mb-2`}>
-                <div className={`p-3 rounded-lg ${msg.sender === senderEmail ? "bg-green-600" : "bg-gray-700"} text-white shadow-md`}>
+              <div
+                key={msg._id}
+                className={`flex ${
+                  msg.sender === senderEmail ? "justify-end" : "justify-start"
+                } mb-2`}
+              >
+                <div
+                  className={`p-3 rounded-lg ${
+                    msg.sender === senderEmail ? "bg-green-600" : "bg-gray-700"
+                  } text-white shadow-md`}
+                >
                   <p className="text-sm">{msg.text}</p>
                   <span className="text-xs text-gray-400 mt-1 text-right">
                     {new Date(msg.timestamp).toLocaleTimeString()}
@@ -123,7 +134,10 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
               onChange={(e) => setInputMessage(e.target.value)}
               placeholder="Type a message..."
             />
-            <button className="ml-2 bg-green-500 p-2 rounded-lg text-white hover:bg-green-600" onClick={sendMessage}>
+            <button
+              className="ml-2 bg-green-500 p-2 rounded-lg text-white hover:bg-green-600"
+              onClick={sendMessage}
+            >
               <Send size={20} />
             </button>
           </div>
