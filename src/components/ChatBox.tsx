@@ -135,9 +135,7 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
       socket.emit("sendMessage", message);
       console.log("📤 Message sent:", message);
 
-      // Optimistically update chat
-      setMessages((prev) => [...prev, message]);
-
+      // Clear input fields
       setInputMessage("");
       setFile(null); // Reset file input
     } catch (error) {
