@@ -2,9 +2,9 @@
 import { useState, useEffect, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { useUser } from "@clerk/nextjs";
-import { Send } from "lucide-react";
+import { Send, Paperclip } from "lucide-react";
 
-// ✅ Initialize socket only once
+// Initialize socket connection
 const socket: Socket = io("http://localhost:4000", { autoConnect: false });
 
 interface Message {
@@ -13,6 +13,7 @@ interface Message {
   recipient: string;
   text: string;
   timestamp: string;
+  attachment?: string; // Optional attachment field
 }
 
 interface ChatBoxProps {
@@ -23,11 +24,12 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
   const { user } = useUser();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const senderEmail = user?.primaryEmailAddress?.emailAddress;
 
-  // ✅ Ensure WebSocket connection is established once
+  // Connect WebSocket and set up listeners
   useEffect(() => {
     if (!socket.connected) {
       socket.connect();
@@ -46,50 +48,98 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
     socket.on("receiveMessage", handleReceiveMessage);
 
     return () => {
-      socket.off("receiveMessage", handleReceiveMessage); // Cleanup listener
+      socket.off("receiveMessage", handleReceiveMessage);
     };
   }, []);
 
-  // ✅ Set the user's socket ID
+  // Set user's socket ID
   useEffect(() => {
     if (senderEmail) {
       socket.emit("setUsername", senderEmail);
     }
   }, [senderEmail]);
 
-  // ✅ Fetch chat history when contact changes
+  // Fetch chat history when contact changes
   useEffect(() => {
     if (selectedContact && senderEmail) {
       fetch(
         `http://localhost:4000/messages?sender=${senderEmail}&recipient=${selectedContact.email}`
       )
-        .then((res) => res.json())
-        .then(setMessages)
-        .catch((err) => console.error("❌ Fetch error:", err));
+        .then((res) => {
+          if (!res.ok) throw new Error("Failed to fetch messages");
+          return res.json();
+        })
+        .then((data) => {
+          console.log("📥 Messages received:", data);
+          setMessages(Array.isArray(data) ? data : []);
+        })
+        .catch((err) => {
+          console.error("❌ Fetch error:", err);
+          setMessages([]);
+        });
     }
   }, [selectedContact, senderEmail]);
 
-  // ✅ Scroll to the latest message
+  // Scroll to the latest message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Handle file selection
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setFile(e.target.files[0]);
+    }
+  };
+
+  // Send message
   const sendMessage = async () => {
-    if (!inputMessage.trim() || !senderEmail || !selectedContact) return;
+    if ((!inputMessage.trim() && !file) || !senderEmail || !selectedContact) return;
+
+    let attachmentPath = "";
+
+    // Upload file if selected
+    if (file) {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const response = await fetch("http://localhost:4000/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`❌ Failed to upload file: ${errorText}`);
+        }
+
+        const { filePath } = await response.json();
+        attachmentPath = filePath;
+        console.log("📤 File uploaded successfully:", filePath);
+      } catch (error) {
+        console.error("❌ Error uploading file:", error);
+        return;
+      }
+    }
 
     const message: Message = {
       sender: senderEmail,
       recipient: selectedContact.email,
       text: inputMessage,
       timestamp: new Date().toISOString(),
+      attachment: attachmentPath,
     };
 
     try {
-      // ✅ Emit the message via WebSocket (this will trigger the backend to save it)
       socket.emit("sendMessage", message);
       console.log("📤 Message sent:", message);
 
+      // Optimistically update chat
+      setMessages((prev) => [...prev, message]);
+
       setInputMessage("");
+      setFile(null); // Reset file input
     } catch (error) {
       console.error("❌ Error sending message:", error);
     }
@@ -106,7 +156,7 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
           <div className="flex-1 overflow-y-auto p-4 bg-gray-900">
             {messages.map((msg) => (
               <div
-                key={msg._id}
+                key={msg._id || `${msg.timestamp}-${msg.sender}`} // Unique key
                 className={`flex ${
                   msg.sender === senderEmail ? "justify-end" : "justify-start"
                 } mb-2`}
@@ -116,7 +166,29 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
                     msg.sender === senderEmail ? "bg-green-600" : "bg-gray-700"
                   } text-white shadow-md`}
                 >
-                  <p className="text-sm">{msg.text}</p>
+                  {msg.text && <p className="text-sm">{msg.text}</p>}
+                  {msg.attachment && (
+                    <div className="mt-2">
+                      {msg.attachment.endsWith(".jpg") ||
+                      msg.attachment.endsWith(".png") ||
+                      msg.attachment.endsWith(".jpeg") ? (
+                        <img
+                          src={`http://localhost:4000${msg.attachment}`}
+                          alt="Attachment"
+                          className="max-w-full h-auto rounded"
+                        />
+                      ) : (
+                        <a
+                          href={`http://localhost:4000${msg.attachment}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 underline"
+                        >
+                          Download File
+                        </a>
+                      )}
+                    </div>
+                  )}
                   <span className="text-xs text-gray-400 mt-1 text-right">
                     {new Date(msg.timestamp).toLocaleTimeString()}
                   </span>
@@ -134,6 +206,14 @@ const ChatBox = ({ selectedContact }: ChatBoxProps) => {
               onChange={(e) => setInputMessage(e.target.value)}
               placeholder="Type a message..."
             />
+            <label className="ml-2 p-2 bg-gray-700 text-white rounded cursor-pointer">
+              <Paperclip size={20} />
+              <input
+                type="file"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+            </label>
             <button
               className="ml-2 bg-green-500 p-2 rounded-lg text-white hover:bg-green-600"
               onClick={sendMessage}

@@ -4,6 +4,9 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 const Message = require("./models/Message");
 
 const app = express();
@@ -14,36 +17,61 @@ const io = new Server(server, {
 
 app.use(cors());
 app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// ✅ Connect to MongoDB
+// Ensure "uploads" directory exists
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Configure Multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+const upload = multer({ storage });
+
+// Connect to MongoDB
 mongoose
   .connect(process.env.MONGO_URL, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ Connected to MongoDB"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// ✅ Store online users (mapping emails to socket IDs)
+// Handle file uploads
+app.post("/upload", upload.single("file"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+  res.json({ filePath: `/uploads/${req.file.filename}` });
+});
+
+// Store online users
 const users = {};
 
 io.on("connection", (socket) => {
   console.log(`🔵 New connection: ${socket.id}`);
 
-  // ✅ Set the user's socket ID
+  // Set the user's socket ID
   socket.on("setUsername", (email) => {
     users[email] = socket.id;
     console.log(`✅ User ${email} connected with ID ${socket.id}`);
     io.emit("userList", Object.keys(users)); // Broadcast online users
   });
 
-  // ✅ Handle sending messages
+  // Handle sending messages
   socket.on("sendMessage", async (message) => {
     try {
       console.log("📩 Received message:", message);
 
-      // Remove _id if it exists (MongoDB will generate one automatically)
-      const { _id, ...messageData } = message;
-
       // Save to database
-      const savedMessage = await Message.create(messageData);
+      const savedMessage = await Message.create(message);
 
       // Emit message to recipient if online
       if (users[message.recipient]) {
@@ -58,7 +86,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ✅ Handle disconnection
+  // Handle disconnection
   socket.on("disconnect", () => {
     const email = Object.keys(users).find((key) => users[key] === socket.id);
     if (email) {
@@ -69,7 +97,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// ✅ Fetch messages API
+// Fetch messages API
 app.get("/messages", async (req, res) => {
   try {
     const { sender, recipient } = req.query;
@@ -88,6 +116,6 @@ app.get("/messages", async (req, res) => {
   }
 });
 
-// ✅ Start server
+// Start server
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
